@@ -22,7 +22,7 @@ stack first and falls back to a TF-IDF backend + brute-force cosine index
 the real stack can't be constructed — logging loudly when it does.
 """
 from __future__ import annotations
-
+import os
 import hashlib
 import json
 import logging
@@ -40,7 +40,7 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 TOP_N_RETRIEVE = 20  # Priority 1: retrieve top-20 candidates semantically
 CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / ".cache"
 
-
+USE_SEMANTIC = os.getenv("USE_SEMANTIC", "false").lower() == "true"
 # ---------------------------------------------------------------------------
 # Protocols (Dependency Inversion boundary)
 # ---------------------------------------------------------------------------
@@ -282,34 +282,73 @@ class SemanticRetriever:
 
 
 def build_default_retriever(catalog: Catalog) -> SemanticRetriever:
-    """Factory: real SentenceTransformer+FAISS stack, degrading gracefully.
-
-    This is the one place that decides which concrete backend/index to use.
-    Everything else in the codebase depends on the `SemanticRetriever`
-    abstraction, so this function is the entire blast radius of a dependency
-    swap or a missing-package incident.
     """
+    Build the retriever.
+
+    If USE_SEMANTIC=true:
+        SentenceTransformer + FAISS
+
+    Otherwise:
+        TF-IDF + BruteForce
+
+    This allows the same codebase to run both locally (semantic search)
+    and on Render Free (lightweight mode).
+    """
+
+    if not USE_SEMANTIC:
+        logger.info(
+            "Semantic retrieval disabled (USE_SEMANTIC=false). "
+            "Using lightweight TF-IDF retrieval."
+        )
+
+        backend = TfidfEmbeddingBackend()
+
+        retriever = SemanticRetriever(
+            embedding_backend=backend,
+            index_factory=BruteForceCosineIndex,
+            cache_path=CACHE_DIR / "catalog_embeddings_tfidf.npz",
+        )
+
+        retriever.build(catalog.products)
+        return retriever
+
+    logger.info("Semantic retrieval enabled.")
+
     cache_path = CACHE_DIR / "catalog_embeddings.npz"
 
     try:
         backend: EmbeddingBackend = SentenceTransformerBackend()
-        # Touch the model now so a missing/undownloadable model fails fast,
-        # here, with a clear log line — not silently on the first request.
+
+        # Load the model only when semantic retrieval is enabled.
         backend.encode(["healthcheck"])
+
+        # Ensure FAISS is available.
+        import faiss  # noqa: F401
+
         index_factory = FaissVectorIndex
-        _ = __import__("faiss")  # confirm FAISS import succeeds before committing
-        logger.info("Using SentenceTransformer + FAISS retrieval stack.")
-    except Exception as exc:  # noqa: BLE001 - intentionally broad: any failure degrades, doesn't crash
+
+        logger.info(
+            "Using SentenceTransformer (%s) + FAISS.",
+            EMBEDDING_MODEL_NAME,
+        )
+
+    except Exception as exc:
         logger.warning(
-            "Falling back to TF-IDF + brute-force retrieval (reason: %s). "
-            "Install sentence-transformers and faiss-cpu, with network access "
-            "to download model weights, for full semantic retrieval quality.",
+            "Semantic retrieval unavailable (%s). "
+            "Falling back to TF-IDF retrieval.",
             exc,
         )
+
         backend = TfidfEmbeddingBackend()
         index_factory = BruteForceCosineIndex
         cache_path = CACHE_DIR / "catalog_embeddings_tfidf.npz"
 
-    retriever = SemanticRetriever(backend, index_factory, cache_path=cache_path)
+    retriever = SemanticRetriever(
+        embedding_backend=backend,
+        index_factory=index_factory,
+        cache_path=cache_path,
+    )
+
     retriever.build(catalog.products)
+
     return retriever
