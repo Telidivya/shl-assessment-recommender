@@ -1,0 +1,20 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+requests>=2.31
+beautifulsoup4>=4.12
+pytest>=8.0
+httpx>=0.27
+
+# Semantic retrieval (Priority 1). Both are optional at runtime: app/retrieval.py
+# catches ImportError/model-load failures and degrades to a TF-IDF + brute-force
+# cosine fallback (scikit-learn + numpy only) so the service still starts and
+# serves correctly-shaped responses without them -- see README "Retrieval backends".
+sentence-transformers>=2.7
+faiss-cpu>=1.8
+
+# Used directly (numpy, for vector math) and as the fallback retrieval backend
+# (scikit-learn's TfidfVectorizer) when sentence-transformers/faiss aren't
+# available or can't download model weights (e.g. no network egress).
+numpy>=1.26
+scikit-learn>=1.4
